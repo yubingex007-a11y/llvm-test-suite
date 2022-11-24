@@ -80,9 +80,10 @@ void matrix_multiply(big_matrix<T1, M, N> &C, big_matrix<T2, M, K> &A,
              joint_matrix_load(
                  sg, sub_a, accA.get_pointer() + (sg_startx * TM) * K + k * TK,
                  K, matrix_layout::row_major);
-             joint_matrix_load(
-                 sg, sub_b, accB.get_pointer() + (sg_startx * TN) * K + k * TK,
-                 K, matrix_layout::col_major);
+             joint_matrix_load(sg, sub_b,
+                               accB.get_pointer() +
+                                   (sg_starty / SG_SZ * TN) * K + k * TK,
+                               K, matrix_layout::col_major);
              sub_c = joint_matrix_mad(sg, sub_a, sub_b, sub_c);
            }
            joint_matrix_store(sg, sub_c,
@@ -97,9 +98,9 @@ static constexpr size_t MATRIX_M = TM * 2;
 static constexpr size_t MATRIX_N = TN * 2;
 static constexpr size_t MATRIX_K = TK * 2;
 bfloat16 A[MATRIX_M][MATRIX_K];
-bfloat16 B[MATRIX_K][MATRIX_N];
+bfloat16 B[MATRIX_N][MATRIX_K];
 unsigned short Aref[MATRIX_M][MATRIX_K];
-unsigned short Bref[MATRIX_K][MATRIX_N];
+unsigned short Bref[MATRIX_N][MATRIX_K];
 float C[MATRIX_M][MATRIX_N];
 float D[MATRIX_M][MATRIX_N];
 
@@ -134,8 +135,8 @@ int main() {
       Aref[i][j] = make_bf16(1.0f * (i + j));
     }
   }
-  for (int i = 0; i < MATRIX_K; i++) {
-    for (int j = 0; j < MATRIX_N; j++) {
+  for (int i = 0; i < MATRIX_N; i++) {
+    for (int j = 0; j < MATRIX_K; j++) {
       B[i][j] = bfloat16::from_bits((make_bf16(2.0f * i + 3.0f * j)));
       Bref[i][j] = make_bf16(2.0f * i + 3.0f * j);
     }
