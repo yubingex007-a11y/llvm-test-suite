@@ -1,30 +1,23 @@
-#include <CL/sycl.hpp>
-#include <iostream>
+#define TM 8
+#define TN SG_SZ
+#define TK 32
 
-using namespace sycl;
-using namespace sycl::ext::oneapi::experimental::matrix;
-
-#define TILE_SZ 16
-#define TM (TILE_SZ)
-#define TN (TILE_SZ -4)
-#define TK (4 * TILE_SZ)
-
-#define SG_SZ 16
-
-template <typename T, size_t NUM_ROWS, size_t NUM_COLS> struct big_matrix{
+template <typename T, size_t NUM_ROWS, size_t NUM_COLS> struct big_matrix {
 public:
   T *mat;
 
 public:
   T *get_data() { return mat; }
   void set_data(T *data) { mat = data; }
-  big_matrix(T *data) : mat(data) {
-  }
+  big_matrix(T *data) : mat(data) {}
 };
 
-template <typename T1, typename T2, size_t NUM_ROWS_A, size_t NUM_COLS_A, size_t NUM_ROWS_B,
-          size_t NUM_COLS_B, size_t NUM_ROWS_C, size_t NUM_COLS_C>
-void matrix_multiply(big_matrix<T1, NUM_ROWS_C, NUM_COLS_C> &C, big_matrix<T2, NUM_ROWS_A, NUM_COLS_A> &A, big_matrix<T2, NUM_ROWS_B, NUM_COLS_B> &B) {
+template <typename T1, typename T2, size_t NUM_ROWS_A, size_t NUM_COLS_A,
+          size_t NUM_ROWS_B, size_t NUM_COLS_B, size_t NUM_ROWS_C,
+          size_t NUM_COLS_C>
+void matrix_multiply(big_matrix<T1, NUM_ROWS_C, NUM_COLS_C> &C,
+                     big_matrix<T2, NUM_ROWS_A, NUM_COLS_A> &A,
+                     big_matrix<T2, NUM_ROWS_B, NUM_COLS_B> &B) {
   size_t M = NUM_ROWS_C;
   size_t N = NUM_COLS_C;
   size_t K = NUM_COLS_A;
@@ -58,9 +51,10 @@ void matrix_multiply(big_matrix<T1, NUM_ROWS_C, NUM_COLS_C> &C, big_matrix<T2, N
 
            ext::oneapi::sub_group sg = spmd_item.get_sub_group();
            joint_matrix<int8_t, TM, TK> sub_a(sg);
-           // For B, since current implementation does not support non-packed layout,
-           // users need to specify the updated VNNI sizes along with the packed_b layout.
-           // By default, the layout is row_major and size is (TK, TN).
+           // For B, since current implementation does not support non-packed
+           // layout, users need to specify the updated VNNI sizes along with
+           // the packed_b layout. By default, the layout is row_major and size
+           // is (TK, TN).
            joint_matrix<int8_t, TK, TN, matrix_layout::packed_b> sub_b(sg);
            joint_matrix<int32_t, TM, TN> sub_c(sg);
 
@@ -69,15 +63,12 @@ void matrix_multiply(big_matrix<T1, NUM_ROWS_C, NUM_COLS_C> &C, big_matrix<T2, N
            joint_matrix_fill(sg, sub_c, 0);
            for (int k = 0; k < K / TK; k += 1) {
              joint_matrix_load(
-                 sg, sub_a, accA.get_pointer() + (sg_startx * TM) * K + k * TK,
-                 K, matrix_layout::row_major);
-             // Assuming B data is row_major, then we should do transform when load!
-             // B: if rowmajor, then TK * TN, ptr = (k * TK) * stride + TN * sg_starty
-             // if vnni, then TK/4 * TN*4, ptr = (k * TK/4) * stride + (TN*4) * sg_starty
+                 sg, sub_a, accA.get_pointer() + ( k* TK) * M + sg_startx * TM,
+                 M, matrix_layout::col_major);
              joint_matrix_load(sg, sub_b,
-                               accB.get_pointer() + (k * TK) * N +
-                                   sg_starty / SG_SZ * TN,
-                               N, matrix_layout::row_major);
+                               accB.get_pointer() +
+                                   (sg_starty / SG_SZ * TN) * K + k * TK,
+                               K, matrix_layout::col_major);
              sub_c = joint_matrix_mad(sg, sub_a, sub_b, sub_c);
            }
            joint_matrix_store(sg, sub_c,
@@ -91,55 +82,36 @@ void matrix_multiply(big_matrix<T1, NUM_ROWS_C, NUM_COLS_C> &C, big_matrix<T2, N
 static constexpr size_t MATRIX_M = TM;
 static constexpr size_t MATRIX_N = TN;
 static constexpr size_t MATRIX_K = TK;
-int8_t A[MATRIX_M][MATRIX_K];
-int8_t B[MATRIX_K][MATRIX_N];
-int8_t Bvnni[MATRIX_K / 4][MATRIX_N * 4];
+int8_t A[MATRIX_K][MATRIX_M];
+int8_t Aref[MATRIX_K][MATRIX_M];
+int8_t B[MATRIX_N][MATRIX_K];
+int8_t Bref[MATRIX_N][MATRIX_K];
 int32_t C[MATRIX_M][MATRIX_N];
 int32_t D[MATRIX_M][MATRIX_N];
 
-void int8_row_vnni_reformat(int8_t *_in, int8_t *_out, int K, int N, int stride_in) {
-  // find the old index, new index, and copy element.
-  //(K, N) => (k/4, N*4)
-  //idx in 2d: (i,j)=>(i/4, j*4+i%4)
-  //linear idx: 
-  for(int i =0; i< K; ++i) {
-    for(int j =0; j< N; ++j) {
-      size_t oldindex = i*stride_in+j;
-      size_t newindex = (i/4) * N*4 + j*4+i%4;
-      _out[newindex] =_in[oldindex];
-    }
-  }
-}
-
-void matrix_multiply_ref(int32_t *A_mem, int32_t *B_mem, int32_t *C_mem, int M,
-                       int N, int K) {
-  // tiling
+void matrix_multiply_ref(int M, int N, int K) {
   for (int m = 0; m < M; m++)
     for (int n = 0; n < N; n++) {
       for (int k = 0; k < K; k++) {
-        char *va = (char *)(A_mem + m * K + k);
-        char *vb = (char *)(B_mem + k * N + n);
-        int acc = *(C_mem + m * N + n);
-        for (int i = 0; i < 4; i++) {
-          acc += (va[i] * vb[i]);
-        }
-        *(C_mem + m * N + n) = acc;
+        D[m][n] += Aref[k][m] * Bref[n][k];
       }
     }
 }
 
 int main() {
-  for (int i = 0; i < MATRIX_M; i++) {
-    for (int j = 0; j < MATRIX_K; j++) {
-      A[i][j] = i+j;
-    }
-  }
   for (int i = 0; i < MATRIX_K; i++) {
-    for (int j = 0; j < MATRIX_N; j++) {
-      B[i][j] = i+2*j;
+    for (int j = 0; j < MATRIX_M; j++) {
+      A[i][j] = 2 * i + j;
+      Aref[i][j] = 2 * i + j;
     }
   }
-  int8_row_vnni_reformat((int8_t*)B, (int8_t*)Bvnni, MATRIX_K, MATRIX_N, MATRIX_N);
+  for (int i = 0; i < MATRIX_N; i++) {
+    for (int j = 0; j < MATRIX_K; j++) {
+      B[i][j] = i + 2 * j;
+      Bref[i][j] = i + 2 * j;
+    }
+  }
+
   for (int i = 0; i < MATRIX_M; i++) {
     for (int j = 0; j < MATRIX_N; j++) {
       C[i][j] = 0;
@@ -150,10 +122,9 @@ int main() {
   big_matrix<int32_t, MATRIX_M, MATRIX_N> MC((int32_t *)&C);
   big_matrix<int32_t, MATRIX_M, MATRIX_N> MD((int32_t *)&D);
   big_matrix<int8_t, MATRIX_M, MATRIX_K> MA((int8_t *)&A);
-  big_matrix<int8_t,MATRIX_K / 4, MATRIX_N * 4> MB((int8_t *)&B);
+  big_matrix<int8_t, MATRIX_K, MATRIX_N> MB((int8_t *)&B);
   matrix_multiply(MC, MA, MB);
-  matrix_multiply_ref((int32_t *)A, (int32_t *)Bvnni, (int32_t *)D, MATRIX_M,
-                    MATRIX_N, MATRIX_K / 4);
+  matrix_multiply_ref(MATRIX_M, MATRIX_N, MATRIX_K);
 
   bool res = true;
   for (int i = 0; i < MATRIX_M; i++) {
@@ -166,15 +137,4 @@ int main() {
     std::cout << "passed\n";
   else
     std::cout << "failed\n";
-  for (int i = 0; i < MATRIX_M; i++) {
-    for (int j = 0; j < MATRIX_N; j++)
-      std::cout << C[i][j] << ", ";
-    std::cout << "\n";
-  }
-  std::cout << std::endl;
-  for (int i = 0; i < MATRIX_M; i++) {
-    for (int j = 0; j < MATRIX_N; j++)
-      std::cout << D[i][j] << ", ";
-    std::cout << "\n";
-  }
 }

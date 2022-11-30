@@ -1,33 +1,7 @@
-//==----- joint_matrix_bfloat16_col_major.cpp  - DPC++ joint_matrix---------==//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
-// REQUIRES: matrix
-
-// RUN: %clangxx -fsycl %s -o %t.out
-// RUN: %CPU_RUN_PLACEHOLDER %t.out
-// RUN: %GPU_RUN_PLACEHOLDER %t.out
-
-// This tests support of col major layout for matrix B which does transpose and
-// then VNNI transform. This is currently only available on AMX
-
-// XFAIL: gpu
-
-#include <iostream>
-#include <sycl/sycl.hpp>
-
-using namespace sycl;
-using namespace sycl::ext::oneapi::experimental::matrix;
-using bfloat16 = sycl::ext::oneapi::experimental::bfloat16;
-
-#define SG_SZ 8
-
 #define TM 8
-#define TN 8
+#define TN SG_SZ
 #define TK 16
+#define BF16_EPSILON 0.00781250
 
 template <typename T, size_t NUM_ROWS, size_t NUM_COLS> struct big_matrix {
 private:
@@ -78,8 +52,8 @@ void matrix_multiply(big_matrix<T1, M, N> &C, big_matrix<T2, M, K> &A,
                              N, matrix_layout::row_major);
            for (int k = 0; k < K / TK; k += 1) { //
              joint_matrix_load(
-                 sg, sub_a, accA.get_pointer() + (sg_startx * TM) * K + k * TK,
-                 K, matrix_layout::row_major);
+                 sg, sub_a, accA.get_pointer() + (k * TK) * M + sg_startx * TM,
+                 M, matrix_layout::col_major);
              joint_matrix_load(sg, sub_b,
                                accB.get_pointer() +
                                    (sg_starty / SG_SZ * TN) * K + k * TK,
@@ -97,9 +71,9 @@ void matrix_multiply(big_matrix<T1, M, N> &C, big_matrix<T2, M, K> &A,
 static constexpr size_t MATRIX_M = TM * 2;
 static constexpr size_t MATRIX_N = TN * 2;
 static constexpr size_t MATRIX_K = TK * 2;
-bfloat16 A[MATRIX_M][MATRIX_K];
+bfloat16 A[MATRIX_K][MATRIX_M];
 bfloat16 B[MATRIX_N][MATRIX_K];
-unsigned short Aref[MATRIX_M][MATRIX_K];
+unsigned short Aref[MATRIX_K][MATRIX_M];
 unsigned short Bref[MATRIX_N][MATRIX_K];
 float C[MATRIX_M][MATRIX_N];
 float D[MATRIX_M][MATRIX_N];
@@ -121,14 +95,14 @@ void matrix_multiply_ref(int M, int N, int K) {
   for (int m = 0; m < M; m++)
     for (int n = 0; n < N; n++) {
       for (int k = 0; k < K; k++) {
-        D[m][n] += make_fp32(Aref[m][k]) * make_fp32(Bref[n][k]);
+        D[m][n] += make_fp32(Aref[k][m]) * make_fp32(Bref[n][k]);
       }
     }
 }
 
 int main() {
-  for (int i = 0; i < MATRIX_M; i++) {
-    for (int j = 0; j < MATRIX_K; j++) {
+  for (int i = 0; i < MATRIX_K; i++) {
+    for (int j = 0; j < MATRIX_M; j++) {
       // bfloat16 is created using unsigned short since conversion from float to
       // bfloat16 is not supported on the host side yet
       A[i][j] = bfloat16::from_bits(make_bf16(1.0f * (i + j)));
@@ -158,9 +132,8 @@ int main() {
   bool res = true;
   for (int i = 0; i < MATRIX_M; i++) {
     for (int j = 0; j < MATRIX_N; j++) {
-      if (C[i][j] != D[i][j]) {
+      if ((fabs(C[i][j]) - fabs(D[i][j])) > BF16_EPSILON)
         res = false;
-      }
     }
   }
   if (res)

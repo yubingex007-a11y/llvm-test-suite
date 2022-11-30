@@ -1,33 +1,7 @@
-//==-------joint_matrix_bfloat16_row_major.cpp  - DPC++ joint_matrix--------==//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
-// REQUIRES: matrix
-
-// RUN: %clangxx -fsycl %s -o %t.out
-// RUN: %CPU_RUN_PLACEHOLDER %t.out
-// RUN: %GPU_RUN_PLACEHOLDER %t.out
-
-// This tests support of row major layout for matrix B which does automatic VNNI
-// transform. This is currently only available on AMX
-
-// XFAIL: gpu
-
-#include <iostream>
-#include <sycl/sycl.hpp>
-
-using namespace sycl;
-using namespace sycl::ext::oneapi::experimental::matrix;
-using bfloat16 = sycl::ext::oneapi::experimental::bfloat16;
-
-#define SG_SZ 8
-
 #define TM 8
-#define TN 8
+#define TN SG_SZ
 #define TK 16
+#define BF16_EPSILON 0.00781250
 
 template <typename T, size_t NUM_ROWS, size_t NUM_COLS> struct big_matrix {
 private:
@@ -158,9 +132,8 @@ int main() {
   bool res = true;
   for (int i = 0; i < MATRIX_M; i++) {
     for (int j = 0; j < MATRIX_N; j++) {
-      if (C[i][j] != D[i][j]) {
+      if ((fabs(C[i][j]) - fabs(D[i][j])) > BF16_EPSILON)
         res = false;
-      }
     }
   }
   if (res)
