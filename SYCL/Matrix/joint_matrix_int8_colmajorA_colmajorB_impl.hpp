@@ -63,7 +63,7 @@ void matrix_multiply(big_matrix<T1, NUM_ROWS_C, NUM_COLS_C> &C,
            joint_matrix_fill(sg, sub_c, 0);
            for (int k = 0; k < K / TK; k += 1) {
              joint_matrix_load(
-                 sg, sub_a, accA.get_pointer() + ( k* TK) * M + sg_startx * TM,
+                 sg, sub_a, accA.get_pointer() + (k * TK) * M + sg_startx * TM,
                  M, matrix_layout::col_major);
              joint_matrix_load(sg, sub_b,
                                accB.get_pointer() +
